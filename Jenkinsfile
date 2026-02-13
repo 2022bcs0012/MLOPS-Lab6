@@ -3,13 +3,12 @@ pipeline {
 
     options {
         timestamps()
-        ansiColor('xterm')
     }
 
     environment {
         VENV_DIR     = "venv"
         METRICS_FILE = "app/artifacts/metrics.json"
-        IMAGE_NAME   = "2022bcs0012/lab6"
+        IMAGE_NAME   = "2022bcs0012/lab6"   // keep, but push will use DOCKER_USER namespace safely
         BUILD_MODEL  = "false"
     }
 
@@ -17,23 +16,12 @@ pipeline {
 
         stage('Checkout') {
             steps {
-                echo "DEBUG: Workspace=${env.WORKSPACE}"
-                sh 'set -eux; pwd; ls -la'
-                checkout scm
-                sh 'set -eux; echo "DEBUG: After checkout"; git rev-parse HEAD || true; git status || true; ls -la'
-            }
-        }
-
-        // Prove which Jenkinsfile is running
-        stage('Print Jenkinsfile (proof)') {
-            steps {
-                sh '''
-                set -euxo pipefail
-                echo "=== DEBUG: Jenkinsfile path listing ==="
-                ls -la
-                echo "=== DEBUG: Jenkinsfile (first 220 lines) ==="
-                sed -n '1,220p' Jenkinsfile || true
-                '''
+                // Avoid @tmp git issues after container/workspace changes
+                deleteDir()
+                dir(env.WORKSPACE) {
+                    checkout scm
+                }
+                sh 'set -eux; pwd; ls -la; test -d .git; git rev-parse HEAD'
             }
         }
 
@@ -45,16 +33,16 @@ pipeline {
                 id || true
                 whoami || true
                 uname -a || true
-                echo "=== DEBUG: Environment ==="
-                env | sort | sed -n '1,120p'
+
                 echo "=== DEBUG: Python ==="
                 which python3 || true
                 python3 --version || true
-                echo "=== DEBUG: Docker ==="
+
+                echo "=== DEBUG: Docker (must show Server:) ==="
                 which docker || true
-                docker version || true
-                docker info | head -n 80 || true
-                ls -la /var/run/docker.sock || true
+                docker version
+                docker info | head -n 60
+                ls -la /var/run/docker.sock
                 '''
             }
         }
@@ -69,11 +57,7 @@ pipeline {
                 python --version
                 pip --version
                 pip install --upgrade pip
-                echo "=== DEBUG: requirements.txt (first 80 lines) ==="
-                head -n 80 requirements.txt || true
                 pip install -r requirements.txt
-                echo "=== DEBUG: pip freeze (first 120 lines) ==="
-                pip freeze | sed -n '1,120p'
                 '''
             }
         }
@@ -83,78 +67,66 @@ pipeline {
                 sh '''
                 set -euxo pipefail
                 . "$VENV_DIR/bin/activate"
-
-                echo "=== DEBUG: Project tree (key dirs) ==="
-                ls -la
-                ls -la app || true
-                ls -la app/artifacts || true
-
-                echo "=== DEBUG: Running training ==="
                 python -u app/train.py
-
-                echo "=== DEBUG: After training artifacts ==="
+                echo "=== DEBUG: artifacts ==="
                 ls -la app/artifacts || true
-
-                echo "=== DEBUG: metrics.json content (if exists) ==="
-                if [ -f "$METRICS_FILE" ]; then
-                  cat "$METRICS_FILE"
-                else
-                  echo "metrics.json NOT FOUND at $METRICS_FILE"
-                fi
                 '''
             }
         }
 
-        stage('Read Metrics (Groovy)') {
+        stage('Read Metrics (Python, no Jenkins plugins)') {
             steps {
+                sh '''
+                set -euxo pipefail
+                test -f "$METRICS_FILE" || (echo "CRITICAL: Missing $METRICS_FILE" && find . -maxdepth 6 -type f -print && exit 2)
+
+                python3 - << 'PY'
+import json, os, math
+p = os.environ["METRICS_FILE"]
+with open(p, "r", encoding="utf-8") as f:
+    d = json.load(f)
+
+r2 = d.get("r2", None)
+rmse = d.get("rmse", None)
+print("DEBUG: metrics.json =", d)
+
+if r2 is None or rmse is None:
+    raise SystemExit("CRITICAL: metrics.json missing keys r2/rmse")
+
+r2 = float(r2)
+rmse = float(rmse)
+
+if math.isnan(r2) or math.isnan(rmse):
+    raise SystemExit(f"CRITICAL: NaN in metrics: r2={r2}, rmse={rmse}")
+
+# Write to env file for Jenkins to load
+with open("metrics.env", "w", encoding="utf-8") as out:
+    out.write(f"NEW_R2={r2}\\n")
+    out.write(f"NEW_RMSE={rmse}\\n")
+
+print(f"DEBUG: NEW_R2={r2}")
+print(f"DEBUG: NEW_RMSE={rmse}")
+PY
+
+                echo "=== DEBUG: metrics.env ==="
+                cat metrics.env
+                '''
                 script {
-                    echo "DEBUG: Reading metrics from ${METRICS_FILE}"
-
-                    if (!fileExists(METRICS_FILE)) {
-                        sh 'set +e; echo "DEBUG: find workspace files (maxdepth 6):"; find . -maxdepth 6 -type f -print'
-                        error "CRITICAL: Metrics file ${METRICS_FILE} not found!"
-                    }
-
-                    def json = readJSON file: "${METRICS_FILE}"
-                    echo "DEBUG: Raw JSON map: ${json}"
-                    echo "DEBUG: JSON type: ${json.getClass().getName()}"
-
-                    def r2Val = json['r2']
-                    def rmseVal = json['rmse']
-
-                    echo "DEBUG: Raw r2=${r2Val} (type=${r2Val?.getClass()?.getName()})"
-                    echo "DEBUG: Raw rmse=${rmseVal} (type=${rmseVal?.getClass()?.getName()})"
-
-                    if (r2Val == null || rmseVal == null) {
-                        error "CRITICAL: metrics.json missing required keys (r2, rmse). Got: ${json}"
-                    }
-
-                    env.NEW_R2   = "${r2Val}".trim()
-                    env.NEW_RMSE = "${rmseVal}".trim()
-
-                    // Validate numeric and not NaN
-                    float nR2_check = env.NEW_R2.toFloat()
-                    float nRMSE_check = env.NEW_RMSE.toFloat()
-                    if (Float.isNaN(nR2_check) || Float.isNaN(nRMSE_check)) {
-                        error "CRITICAL: NEW_R2/NEW_RMSE parsed to NaN. NEW_R2='${env.NEW_R2}', NEW_RMSE='${env.NEW_RMSE}'"
-                    }
-
-                    echo "DEBUG: Parsed NEW_R2=${env.NEW_R2}"
-                    echo "DEBUG: Parsed NEW_RMSE=${env.NEW_RMSE}"
+                    def props = readProperties file: 'metrics.env'
+                    env.NEW_R2 = props['NEW_R2']?.trim()
+                    env.NEW_RMSE = props['NEW_RMSE']?.trim()
+                    echo "DEBUG(Groovy): NEW_R2=${env.NEW_R2}, NEW_RMSE=${env.NEW_RMSE}"
                 }
             }
         }
 
-        stage('Compare Accuracy (Hard Debug)') {
+        stage('Compare Accuracy') {
             steps {
                 withCredentials([
                     string(credentialsId: 'best-r2', variable: 'BASE_R2_FROM_CREDS'),
                     string(credentialsId: 'best-rmse', variable: 'BASE_RMSE_FROM_CREDS')
                 ]) {
                     script {
-                        echo "DEBUG: Baseline creds raw -> R2='${BASE_R2_FROM_CREDS}', RMSE='${BASE_RMSE_FROM_CREDS}'"
-                        echo "DEBUG: Incoming NEW_R2='${env.NEW_R2}', NEW_RMSE='${env.NEW_RMSE}'"
-
                         env.BASELINE_R2   = (BASE_R2_FROM_CREDS?.trim())   ? BASE_R2_FROM_CREDS.trim()   : "-999999.0"
                         env.BASELINE_RMSE = (BASE_RMSE_FROM_CREDS?.trim()) ? BASE_RMSE_FROM_CREDS.trim() : "999999.0"
 
@@ -163,89 +135,48 @@ pipeline {
                         float bR2   = env.BASELINE_R2.toFloat()
                         float bRMSE = env.BASELINE_RMSE.toFloat()
 
-                        if (Float.isNaN(nR2) || Float.isNaN(nRMSE) || Float.isNaN(bR2) || Float.isNaN(bRMSE)) {
-                            error "CRITICAL: NaN detected. nR2=${nR2}, nRMSE=${nRMSE}, bR2=${bR2}, bRMSE=${bRMSE}"
-                        }
-
                         boolean r2Improved = (nR2 > bR2)
                         boolean rmseImproved = (nRMSE < bRMSE)
 
-                        echo "DEBUG: nR2=${nR2}, bR2=${bR2}, r2Improved=${r2Improved}"
-                        echo "DEBUG: nRMSE=${nRMSE}, bRMSE=${bRMSE}, rmseImproved=${rmseImproved}"
-
                         env.BUILD_MODEL = (r2Improved || (nR2 == bR2 && rmseImproved)) ? "true" : "false"
 
-                        echo "DECISION (inside Compare): BUILD_MODEL=${env.BUILD_MODEL}"
-                        echo "DEBUG: env.BUILD_MODEL class=${env.BUILD_MODEL?.getClass()?.getName()}"
+                        echo "DECISION: BUILD_MODEL=${env.BUILD_MODEL} (nR2=${nR2}, bR2=${bR2}, nRMSE=${nRMSE}, bRMSE=${bRMSE})"
                     }
                 }
             }
         }
 
-        stage('Decision Debug (Always)') {
+        stage('Decision Debug') {
             steps {
                 script {
-                    echo "DECISION DEBUG (post-compare):"
+                    echo "DECISION DEBUG:"
                     echo "  BUILD_MODEL=${env.BUILD_MODEL}"
                     echo "  NEW_R2=${env.NEW_R2}"
                     echo "  NEW_RMSE=${env.NEW_RMSE}"
                     echo "  BASELINE_R2=${env.BASELINE_R2}"
                     echo "  BASELINE_RMSE=${env.BASELINE_RMSE}"
-                    echo "  IMAGE_NAME=${env.IMAGE_NAME}"
                     echo "  BUILD_NUMBER=${env.BUILD_NUMBER}"
                 }
             }
         }
 
-        // Extra proof that the when-condition is evaluated correctly (creates a visible marker file)
-        stage('When Condition Probe') {
-            steps {
-                script {
-                    def cond = (env.BUILD_MODEL?.trim() == "true")
-                    echo "DEBUG: when-probe cond=${cond} (BUILD_MODEL='${env.BUILD_MODEL}')"
-                    sh "set -eux; echo \"cond=${cond}\" > when_probe.txt; cat when_probe.txt"
-                    archiveArtifacts artifacts: 'when_probe.txt', fingerprint: true
-                }
-            }
-        }
-
         stage('Docker Build (Conditional)') {
-            when {
-                expression {
-                    echo "DEBUG(when docker build): BUILD_MODEL='${env.BUILD_MODEL}'"
-                    return env.BUILD_MODEL?.trim() == "true"
-                }
-            }
+            when { expression { env.BUILD_MODEL?.trim() == "true" } }
             steps {
                 sh '''
                 set -euxo pipefail
-                echo "DEBUG: docker version:"
-                docker version || true
-
-                echo "DEBUG: Build context listing:"
-                ls -la
-                ls -la Dockerfile || true
+                docker version
 
                 echo "DEBUG: Building ${IMAGE_NAME}:${BUILD_NUMBER}"
                 docker build --progress=plain -t "${IMAGE_NAME}:${BUILD_NUMBER}" .
                 docker tag "${IMAGE_NAME}:${BUILD_NUMBER}" "${IMAGE_NAME}:latest"
-
-                echo "DEBUG: Images:"
-                docker images | head -n 40
-
-                docker image inspect "${IMAGE_NAME}:${BUILD_NUMBER}" >/dev/null
                 docker image inspect "${IMAGE_NAME}:latest" >/dev/null
                 '''
             }
         }
 
-        stage('Docker Push (Conditional)') {
-            when {
-                expression {
-                    echo "DEBUG(when docker push): BUILD_MODEL='${env.BUILD_MODEL}'"
-                    return env.BUILD_MODEL?.trim() == "true"
-                }
-            }
+        stage('Docker Push (Conditional, safe namespace)') {
+            when { expression { env.BUILD_MODEL?.trim() == "true" } }
             steps {
                 withCredentials([usernamePassword(
                     credentialsId: 'dockerhub-creds',
@@ -254,11 +185,21 @@ pipeline {
                 )]) {
                     sh '''
                     set -euxo pipefail
-                    echo "DEBUG: DOCKER_USER=$DOCKER_USER"
-                    echo "DEBUG: Pushing ${IMAGE_NAME}:${BUILD_NUMBER} and ${IMAGE_NAME}:latest"
+
+                    # Push to the authenticated DockerHub namespace to avoid permission issues
+                    REPO="${DOCKER_USER}/lab6"
+
+                    echo "DEBUG: Logging in as $DOCKER_USER"
                     echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
-                    docker push "${IMAGE_NAME}:${BUILD_NUMBER}"
-                    docker push "${IMAGE_NAME}:latest"
+
+                    echo "DEBUG: Tagging local image to $REPO"
+                    docker tag "${IMAGE_NAME}:${BUILD_NUMBER}" "$REPO:${BUILD_NUMBER}"
+                    docker tag "${IMAGE_NAME}:latest" "$REPO:latest"
+
+                    echo "DEBUG: Pushing $REPO:${BUILD_NUMBER} and $REPO:latest"
+                    docker push "$REPO:${BUILD_NUMBER}"
+                    docker push "$REPO:latest"
+
                     docker logout
                     '''
                 }
@@ -266,36 +207,36 @@ pipeline {
         }
 
         stage('Verify Push by Pull (Conditional)') {
-            when {
-                expression {
-                    echo "DEBUG(when verify pull): BUILD_MODEL='${env.BUILD_MODEL}'"
-                    return env.BUILD_MODEL?.trim() == "true"
-                }
-            }
+            when { expression { env.BUILD_MODEL?.trim() == "true" } }
             steps {
-                sh '''
-                set -euxo pipefail
-                docker pull "${IMAGE_NAME}:latest"
-                docker image inspect "${IMAGE_NAME}:latest" --format='DEBUG: Pulled OK -> ID={{.Id}}'
-                '''
+                withCredentials([usernamePassword(
+                    credentialsId: 'dockerhub-creds',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
+                    sh '''
+                    set -euxo pipefail
+                    REPO="${DOCKER_USER}/lab6"
+                    docker pull "$REPO:latest"
+                    docker image inspect "$REPO:latest" --format='PULLED OK: ID={{.Id}} Created={{.Created}}'
+                    '''
+                }
             }
         }
     }
 
     post {
         always {
-            echo "DEBUG: Archiving app/artifacts/**"
-            sh 'set +e; ls -la app/artifacts || true'
-            archiveArtifacts artifacts: 'app/artifacts/**', fingerprint: true
+            archiveArtifacts artifacts: 'app/artifacts/**,metrics.env', fingerprint: true
         }
         failure {
-            echo "DEBUG: Failure diagnostics"
             sh '''
             set +e
-            echo "=== pwd/ls ==="; pwd; ls -la
-            echo "=== git status ==="; git status || true
-            echo "=== docker images ==="; docker images | head -n 40 || true
-            echo "=== docker info ==="; docker info | head -n 80 || true
+            echo "=== failure diagnostics ==="
+            pwd; ls -la
+            git status || true
+            docker info | head -n 80 || true
+            docker images | head -n 40 || true
             '''
         }
     }
