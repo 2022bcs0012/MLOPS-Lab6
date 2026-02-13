@@ -1,0 +1,20 @@
+# virtual environment
+venv/
+
+# python cache
+__pycache__/
+*.pyc
+
+# artifacts
+app/artifacts/
+output/
+*.pkl
+metrics.json
+
+# secrets
+*token*
+*.env
+
+# editor junk
+tempCodeRunnerFile.py
+.vscode/
