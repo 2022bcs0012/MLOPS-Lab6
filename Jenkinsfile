@@ -139,7 +139,7 @@ pipeline {
 
     post {
         always {
-            archiveArtifacts artifacts: '.app/artifacts/**', fingerprint: true
+            archiveArtifacts artifacts: 'app/artifacts/**', fingerprint: true
         }
     }
 }
