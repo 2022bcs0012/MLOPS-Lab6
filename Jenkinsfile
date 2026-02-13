@@ -50,9 +50,17 @@ pipeline {
                     }
                     def json = readJSON file: "${METRICS_FILE}"
                     echo "DEBUG: Raw JSON content: ${json}"
+                    echo "DEBUG: JSON Object Type: ${json.getClass().getName()}"
 
-                    env.NEW_R2 = (json.r2 != null) ? json.r2.toString() : "0.0"
-                    env.NEW_RMSE = (json.rmse != null) ? json.rmse.toString() : "1.0"
+                    // Use bracket notation for more robust access
+                    def r2Val = json['r2']
+                    def rmseVal = json['rmse']
+                    
+                    echo "DEBUG: Raw r2 from map: ${r2Val} (Type: ${r2Val?.getClass()?.getName()})"
+                    echo "DEBUG: Raw rmse from map: ${rmseVal} (Type: ${rmseVal?.getClass()?.getName()})"
+
+                    env.NEW_R2 = (r2Val != null) ? r2Val.toString() : "0.0"
+                    env.NEW_RMSE = (rmseVal != null) ? rmseVal.toString() : "1.0"
 
                     echo "DEBUG: Parsed New R2 = ${env.NEW_R2}"
                     echo "DEBUG: Parsed New RMSE = ${env.NEW_RMSE}"
