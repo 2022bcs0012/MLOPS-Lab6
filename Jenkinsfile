@@ -1,18 +1,21 @@
 pipeline {
   agent any
 
+  options {
+    timestamps()
+  }
+
   environment {
     VENV_DIR     = "venv"
     METRICS_FILE = "app/artifacts/metrics.json"
-    IMAGE_NAME   = "2022bcs0012/lab6"
-    BUILD_MODEL  = "false"
+    // repo name is derived from DOCKER_USER at push time
+    REPO_NAME    = "lab6"
   }
 
   stages {
 
     stage('Checkout') {
       steps {
-        echo "DEBUG: workspace=${env.WORKSPACE}"
         sh 'set -eux; pwd; ls -la'
         checkout scm
         sh 'set -eux; git rev-parse HEAD || true; git status || true; ls -la'
@@ -31,14 +34,13 @@ pipeline {
           which python3 || true
           python3 --version || true
 
-          echo "=== docker ==="
+          echo "=== docker (must show Server:) ==="
           which docker || true
-          docker version || true
-          docker info | head -n 40 || true
+          docker version
+          docker info | head -n 60
 
-          echo "=== key paths ==="
-          ls -la app || true
-          ls -la app/artifacts || true
+          echo "=== docker.sock check ==="
+          ls -la /var/run/docker.sock
         '''
       }
     }
@@ -72,86 +74,73 @@ pipeline {
       }
     }
 
-    stage('Parse metrics (no Jenkins plugins)') {
+    stage('Parse metrics') {
       steps {
         sh '''
           set -euxo pipefail
-          . "$VENV_DIR/bin/activate"
-
-          # Parse JSON with python to avoid readJSON plugin dependency
-          python - << 'PY'
+          python3 - << 'PY'
 import json, os
 p = os.environ["METRICS_FILE"]
 with open(p, "r", encoding="utf-8") as f:
     d = json.load(f)
-r2 = d.get("r2", None)
-rmse = d.get("rmse", None)
+r2 = d.get("r2"); rmse = d.get("rmse")
 print("DEBUG: metrics.json =", d)
 if r2 is None or rmse is None:
     raise SystemExit("CRITICAL: metrics.json missing keys r2/rmse")
-print(f"R2={float(r2)}")
-print(f"RMSE={float(rmse)}")
+print("DEBUG: R2 =", float(r2))
+print("DEBUG: RMSE =", float(rmse))
 PY
         '''
       }
     }
 
-    stage('Docker Push Debug (FORCE)') {
-    steps {
+    stage('Build + Push Docker (WORKING)') {
+      steps {
         withCredentials([usernamePassword(
-        credentialsId: 'dockerhub-creds',
-        usernameVariable: 'DOCKER_USER',
-        passwordVariable: 'DOCKER_PASS'
+          credentialsId: 'dockerhub-creds',
+          usernameVariable: 'DOCKER_USER',
+          passwordVariable: 'DOCKER_PASS'
         )]) {
-        sh '''
-        set -euxo pipefail
+          sh '''
+            set -euxo pipefail
 
-        echo "=== DEBUG: Docker availability ==="
-        which docker
-        docker version
-        docker info | head -n 80
+            REPO="${DOCKER_USER}/${REPO_NAME}"
+            echo "DEBUG: Target repo = $REPO"
+            echo "DEBUG: Tags = ${BUILD_NUMBER}, latest"
 
-        echo "=== DEBUG: DockerHub login ==="
-        echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+            echo "DEBUG: Docker login as $DOCKER_USER"
+            echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
 
-        # IMPORTANT: always push to the authenticated user's namespace
-        REPO="${DOCKER_USER}/lab6"
-        echo "=== DEBUG: Target repo ==="
-        echo "REPO=$REPO"
+            echo "DEBUG: Build"
+            docker build --progress=plain -t "$REPO:${BUILD_NUMBER}" .
 
-        echo "=== DEBUG: Build image ==="
-        docker build --progress=plain -t "$REPO:${BUILD_NUMBER}" .
+            echo "DEBUG: Tag latest"
+            docker tag "$REPO:${BUILD_NUMBER}" "$REPO:latest"
 
-        echo "=== DEBUG: Tag latest ==="
-        docker tag "$REPO:${BUILD_NUMBER}" "$REPO:latest"
+            echo "DEBUG: Local images proof"
+            docker image inspect "$REPO:${BUILD_NUMBER}" >/dev/null
+            docker image inspect "$REPO:latest" >/dev/null
 
-        echo "=== DEBUG: Confirm local images exist ==="
-        docker images | head -n 50
-        docker image inspect "$REPO:${BUILD_NUMBER}" >/dev/null
-        docker image inspect "$REPO:latest" >/dev/null
+            echo "DEBUG: Push (must print digest)"
+            docker push "$REPO:${BUILD_NUMBER}"
+            docker push "$REPO:latest"
 
-        echo "=== DEBUG: Push (this must print layer upload + digest) ==="
-        docker push "$REPO:${BUILD_NUMBER}"
-        docker push "$REPO:latest"
+            echo "DEBUG: Proof by pull"
+            docker rmi -f "$REPO:latest" || true
+            docker pull "$REPO:latest"
+            docker image inspect "$REPO:latest" --format='PULLED OK: ID={{.Id}} Created={{.Created}}'
 
-        echo "=== DEBUG: PROOF (pull back from registry) ==="
-        docker rmi -f "$REPO:latest" || true
-        docker pull "$REPO:latest"
-        docker image inspect "$REPO:latest" --format='PULLED OK: ID={{.Id}} Created={{.Created}}'
-
-        echo "=== DEBUG: Logout ==="
-        docker logout
-        '''
+            docker logout
+          '''
         }
+      }
     }
-    }
-
   }
 
   post {
     always {
-      sh 'set +e; ls -la app/artifacts || true'
       archiveArtifacts artifacts: 'app/artifacts/**', fingerprint: true
+      sh 'set +e; ls -la app/artifacts || true'
     }
   }
 }
