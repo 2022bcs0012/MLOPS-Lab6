@@ -96,47 +96,56 @@ PY
       }
     }
 
-    // Force docker stages to run for debugging (remove later)
-    stage('Force Docker = ON (debug)') {
-      steps {
-        script {
-          env.BUILD_MODEL = "true"
-          echo "DEBUG: Forcing BUILD_MODEL=true for this run"
-        }
-      }
-    }
-
-    stage('Docker Build') {
-      when { expression { env.BUILD_MODEL == "true" } }
-      steps {
-        sh '''
-          set -euxo pipefail
-          docker build --progress=plain -t "${IMAGE_NAME}:${BUILD_NUMBER}" .
-          docker tag "${IMAGE_NAME}:${BUILD_NUMBER}" "${IMAGE_NAME}:latest"
-          docker images | head -n 30
-        '''
-      }
-    }
-
-    stage('Docker Push') {
-      when { expression { env.BUILD_MODEL == "true" } }
-      steps {
+    stage('Docker Push Debug (FORCE)') {
+    steps {
         withCredentials([usernamePassword(
-          credentialsId: 'dockerhub-creds',
-          usernameVariable: 'DOCKER_USER',
-          passwordVariable: 'DOCKER_PASS'
+        credentialsId: 'dockerhub-creds',
+        usernameVariable: 'DOCKER_USER',
+        passwordVariable: 'DOCKER_PASS'
         )]) {
-          sh '''
-            set -euxo pipefail
-            echo "DEBUG: DOCKER_USER=$DOCKER_USER"
-            echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
-            docker push "${IMAGE_NAME}:${BUILD_NUMBER}"
-            docker push "${IMAGE_NAME}:latest"
-            docker logout
-          '''
+        sh '''
+        set -euxo pipefail
+
+        echo "=== DEBUG: Docker availability ==="
+        which docker
+        docker version
+        docker info | head -n 80
+
+        echo "=== DEBUG: DockerHub login ==="
+        echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+
+        # IMPORTANT: always push to the authenticated user's namespace
+        REPO="${DOCKER_USER}/lab6"
+        echo "=== DEBUG: Target repo ==="
+        echo "REPO=$REPO"
+
+        echo "=== DEBUG: Build image ==="
+        docker build --progress=plain -t "$REPO:${BUILD_NUMBER}" .
+
+        echo "=== DEBUG: Tag latest ==="
+        docker tag "$REPO:${BUILD_NUMBER}" "$REPO:latest"
+
+        echo "=== DEBUG: Confirm local images exist ==="
+        docker images | head -n 50
+        docker image inspect "$REPO:${BUILD_NUMBER}" >/dev/null
+        docker image inspect "$REPO:latest" >/dev/null
+
+        echo "=== DEBUG: Push (this must print layer upload + digest) ==="
+        docker push "$REPO:${BUILD_NUMBER}"
+        docker push "$REPO:latest"
+
+        echo "=== DEBUG: PROOF (pull back from registry) ==="
+        docker rmi -f "$REPO:latest" || true
+        docker pull "$REPO:latest"
+        docker image inspect "$REPO:latest" --format='PULLED OK: ID={{.Id}} Created={{.Created}}'
+
+        echo "=== DEBUG: Logout ==="
+        docker logout
+        '''
         }
-      }
     }
+    }
+
   }
 
   post {
