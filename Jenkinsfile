@@ -5,11 +5,6 @@ pipeline {
         VENV_DIR = "venv"
         METRICS_FILE = "app/artifacts/metrics.json"
         IMAGE_NAME = "2022bcs0012/lab6"
-
-        NEW_R2 = ""
-        NEW_RMSE = ""
-        BASELINE_R2 = ""
-        BASELINE_RMSE = ""
         BUILD_MODEL = "false"
     }
 
@@ -59,8 +54,8 @@ pipeline {
                     echo "DEBUG: Raw r2 from map: ${r2Val} (Type: ${r2Val?.getClass()?.getName()})"
                     echo "DEBUG: Raw rmse from map: ${rmseVal} (Type: ${rmseVal?.getClass()?.getName()})"
 
-                    env.NEW_R2 = (r2Val != null) ? r2Val.toString() : "0.0"
-                    env.NEW_RMSE = (rmseVal != null) ? rmseVal.toString() : "1.0"
+                    env.NEW_R2 = "${r2Val}"
+                    env.NEW_RMSE = "${rmseVal}"
 
                     echo "DEBUG: Parsed New R2 = ${env.NEW_R2}"
                     echo "DEBUG: Parsed New RMSE = ${env.NEW_RMSE}"
