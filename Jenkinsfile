@@ -81,7 +81,6 @@ pipeline {
                 }
             }
         }
-
         stage('Compare Accuracy') {
             steps {
                 withCredentials([
@@ -91,33 +90,35 @@ pipeline {
                     script {
                         echo "DEBUG: Baseline creds raw -> R2='${BASE_R2_FROM_CREDS}', RMSE='${BASE_RMSE_FROM_CREDS}'"
 
-                        env.BASELINE_R2   = (BASE_R2_FROM_CREDS != null && BASE_R2_FROM_CREDS.trim() != "") ? BASE_R2_FROM_CREDS.trim() : "0.0"
-                        env.BASELINE_RMSE = (BASE_RMSE_FROM_CREDS != null && BASE_RMSE_FROM_CREDS.trim() != "") ? BASE_RMSE_FROM_CREDS.trim() : "1.0"
+                        // Defaults if creds are missing/unset:
+                        // - baseline R2: very low
+                        // - baseline RMSE: very high
+                        env.BASELINE_R2 = (BASE_R2_FROM_CREDS != null && BASE_R2_FROM_CREDS.trim() != "") ? BASE_R2_FROM_CREDS.trim() : "-999999.0"
+                        env.BASELINE_RMSE = (BASE_RMSE_FROM_CREDS != null && BASE_RMSE_FROM_CREDS.trim() != "") ? BASE_RMSE_FROM_CREDS.trim() : "999999.0"
 
                         float nR2   = env.NEW_R2.toFloat()
                         float nRMSE = env.NEW_RMSE.toFloat()
                         float bR2   = env.BASELINE_R2.toFloat()
                         float bRMSE = env.BASELINE_RMSE.toFloat()
 
-                        def r2Improved   = nR2 > bR2
-                        def rmseImproved = nRMSE < bRMSE
+                        def r2Improved   = (nR2 > bR2)
+                        def rmseImproved = (nRMSE < bRMSE)
 
-                        echo "DEBUG: Compare -> NEW_R2=${nR2}, BASE_R2=${bR2}, r2Improved=${r2Improved}"
-                        echo "DEBUG: Compare -> NEW_RMSE=${nRMSE}, BASE_RMSE=${bRMSE}, rmseImproved=${rmseImproved}"
+                        echo "DEBUG: nR2=${nR2}, bR2=${bR2}, r2Improved=${r2Improved}"
+                        echo "DEBUG: nRMSE=${nRMSE}, bRMSE=${bRMSE}, rmseImproved=${rmseImproved}"
 
                         if (r2Improved || (nR2 == bR2 && rmseImproved)) {
                             env.BUILD_MODEL = "true"
-                            echo "SUCCESS: Model improved -> BUILD_MODEL=true"
                         } else {
                             env.BUILD_MODEL = "false"
-                            echo "INFO: Model not improved -> BUILD_MODEL=false"
                         }
 
-                        echo "DECISION DETAILS: BUILD_MODEL=${env.BUILD_MODEL} (nR2=${nR2}, bR2=${bR2}, nRMSE=${nRMSE}, bRMSE=${bRMSE})"
+                        echo "DECISION: BUILD_MODEL=${env.BUILD_MODEL}"
                     }
                 }
             }
         }
+
 
         stage('Decision Debug (Always)') {
             steps {
