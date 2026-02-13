@@ -82,41 +82,41 @@ pipeline {
             }
         }
         stage('Compare Accuracy') {
-            steps {
-                withCredentials([
-                    string(credentialsId: 'best-r2', variable: 'BASE_R2_FROM_CREDS'),
-                    string(credentialsId: 'best-rmse', variable: 'BASE_RMSE_FROM_CREDS')
-                ]) {
-                    script {
-                        echo "DEBUG: Baseline creds raw -> R2='${BASE_R2_FROM_CREDS}', RMSE='${BASE_RMSE_FROM_CREDS}'"
+        steps {
+            withCredentials([
+            string(credentialsId: 'best-r2', variable: 'BASE_R2_FROM_CREDS'),
+            string(credentialsId: 'best-rmse', variable: 'BASE_RMSE_FROM_CREDS')
+            ]) {
+            script {
+                echo "DEBUG: Baseline creds raw -> R2='${BASE_R2_FROM_CREDS}', RMSE='${BASE_RMSE_FROM_CREDS}'"
+                echo "DEBUG: Incoming NEW_R2='${env.NEW_R2}', NEW_RMSE='${env.NEW_RMSE}'"
 
-                        // Defaults if creds are missing/unset:
-                        // - baseline R2: very low
-                        // - baseline RMSE: very high
-                        env.BASELINE_R2 = (BASE_R2_FROM_CREDS != null && BASE_R2_FROM_CREDS.trim() != "") ? BASE_R2_FROM_CREDS.trim() : "-999999.0"
-                        env.BASELINE_RMSE = (BASE_RMSE_FROM_CREDS != null && BASE_RMSE_FROM_CREDS.trim() != "") ? BASE_RMSE_FROM_CREDS.trim() : "999999.0"
+                // Keep creds if set; otherwise defaults
+                env.BASELINE_R2   = (BASE_R2_FROM_CREDS?.trim())   ? BASE_R2_FROM_CREDS.trim()   : "-999999.0"
+                env.BASELINE_RMSE = (BASE_RMSE_FROM_CREDS?.trim()) ? BASE_RMSE_FROM_CREDS.trim() : "999999.0"
 
-                        float nR2   = env.NEW_R2.toFloat()
-                        float nRMSE = env.NEW_RMSE.toFloat()
-                        float bR2   = env.BASELINE_R2.toFloat()
-                        float bRMSE = env.BASELINE_RMSE.toFloat()
+                float nR2   = env.NEW_R2.toFloat()
+                float nRMSE = env.NEW_RMSE.toFloat()
+                float bR2   = env.BASELINE_R2.toFloat()
+                float bRMSE = env.BASELINE_RMSE.toFloat()
 
-                        def r2Improved   = (nR2 > bR2)
-                        def rmseImproved = (nRMSE < bRMSE)
-
-                        echo "DEBUG: nR2=${nR2}, bR2=${bR2}, r2Improved=${r2Improved}"
-                        echo "DEBUG: nRMSE=${nRMSE}, bRMSE=${bRMSE}, rmseImproved=${rmseImproved}"
-
-                        if (r2Improved || (nR2 == bR2 && rmseImproved)) {
-                            env.BUILD_MODEL = "true"
-                        } else {
-                            env.BUILD_MODEL = "false"
-                        }
-
-                        echo "DECISION: BUILD_MODEL=${env.BUILD_MODEL}"
-                    }
+                // Guard against NaN
+                if (Float.isNaN(nR2) || Float.isNaN(nRMSE) || Float.isNaN(bR2) || Float.isNaN(bRMSE)) {
+                error "CRITICAL: NaN detected. nR2=${nR2}, nRMSE=${nRMSE}, bR2=${bR2}, bRMSE=${bRMSE}"
                 }
+
+                boolean r2Improved = (nR2 > bR2)
+                boolean rmseImproved = (nRMSE < bRMSE)
+
+                echo "DEBUG: nR2=${nR2}, bR2=${bR2}, r2Improved=${r2Improved}"
+                echo "DEBUG: nRMSE=${nRMSE}, bRMSE=${bRMSE}, rmseImproved=${rmseImproved}"
+
+                env.BUILD_MODEL = (r2Improved || (nR2 == bR2 && rmseImproved)) ? "true" : "false"
+
+                echo "DECISION (inside Compare): BUILD_MODEL=${env.BUILD_MODEL}"
             }
+            }
+        }
         }
 
 
