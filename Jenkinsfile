@@ -4,8 +4,12 @@ pipeline {
   options { timestamps() }
 
   environment {
-    VENV_DIR     = "venv"
-    METRICS_FILE = "app/artifacts/metrics.json"
+    IMAGE_NAME     = "2022bcs0012/lab7:latest"
+    CONTAINER_NAME = "ml_inference_test"
+    HOST_PORT      = "8000"
+    CONTAINER_PORT = "8000"
+    HEALTH_URL     = "http://localhost:8000/health"
+    PREDICT_URL    = "http://localhost:8000/predict"
   }
 
   stages {
@@ -13,53 +17,124 @@ pipeline {
     stage('Checkout') {
       steps {
         deleteDir()
-        dir(env.WORKSPACE) { checkout scm }
-        sh 'set -eux; test -d .git; git rev-parse --short HEAD'
+        checkout scm
       }
     }
 
-    stage('Train') {
+    stage('Pull Docker Image') {
       steps {
         sh '''
           set -euxo pipefail
-          python3 -m venv "$VENV_DIR"
-          . "$VENV_DIR/bin/activate"
-          pip install --upgrade pip
-          pip install -r requirements.txt
-          python -u app/train.py
-          test -f "$METRICS_FILE"
-          cat "$METRICS_FILE"
+          docker pull $IMAGE_NAME
         '''
       }
     }
 
-    stage('Build + Push Docker (always)') {
+    stage('Run Container') {
       steps {
-        withCredentials([usernamePassword(
-          credentialsId: 'dockerhub-creds',
-          usernameVariable: 'DOCKER_USER',
-          passwordVariable: 'DOCKER_PASS'
-        )]) {
-          sh '''
-            set -euxo pipefail
+        sh '''
+          set -euxo pipefail
+          docker rm -f $CONTAINER_NAME || true
+          docker run -d -p $HOST_PORT:$CONTAINER_PORT \
+            --name $CONTAINER_NAME $IMAGE_NAME
+          docker ps
+        '''
+      }
+    }
 
-            REPO="${DOCKER_USER}/lab6"
-            echo "DEBUG: Target repo=$REPO"
+    stage('Wait for Service Readiness') {
+      steps {
+        script {
+          def retries = 10
+          def ready = false
 
-            docker version
-            echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+          for (int i = 0; i < retries; i++) {
+            def status = sh(
+              script: "curl -s -o /dev/null -w '%{http_code}' $HEALTH_URL || true",
+              returnStdout: true
+            ).trim()
 
-            docker build -t "$REPO:${BUILD_NUMBER}" .
-            docker tag "$REPO:${BUILD_NUMBER}" "$REPO:latest"
+            echo "Health check status: ${status}"
 
-            docker push "$REPO:${BUILD_NUMBER}"
-            docker push "$REPO:latest"
+            if (status == "200") {
+              ready = true
+              break
+            }
 
-            docker pull "$REPO:latest"
-            docker image inspect "$REPO:latest" --format='PULLED OK: ID={{.Id}} Created={{.Created}}'
+            sleep 5
+          }
 
-            docker logout
-          '''
+          if (!ready) {
+            error "Service did not start within timeout."
+          }
+        }
+      }
+    }
+
+    stage('Valid Inference Test') {
+      steps {
+        script {
+          def response = sh(
+            script: """
+              curl -s -X POST $PREDICT_URL \
+              -H "Content-Type: application/json" \
+              -d @valid.json
+            """,
+            returnStdout: true
+          ).trim()
+
+          echo "Valid Response: ${response}"
+
+          if (!response.contains("prediction")) {
+            error "Prediction field missing."
+          }
+
+          def numericCheck = sh(
+            script: """
+              echo '${response}' | grep -E '"prediction":[ ]*[0-9.]+' || true
+            """,
+            returnStdout: true
+          ).trim()
+
+          if (numericCheck == "") {
+            error "Prediction is not numeric."
+          }
+
+          echo "Valid inference test passed."
+        }
+      }
+    }
+
+    stage('Invalid Inference Test') {
+      steps {
+        script {
+          def status = sh(
+            script: """
+              curl -s -o invalid_response.txt -w '%{http_code}' \
+              -X POST $PREDICT_URL \
+              -H "Content-Type: application/json" \
+              -d @invalid.json
+            """,
+            returnStdout: true
+          ).trim()
+
+          def body = sh(
+            script: "cat invalid_response.txt",
+            returnStdout: true
+          ).trim()
+
+          echo "Invalid status: ${status}"
+          echo "Invalid body: ${body}"
+
+          if (status == "200") {
+            error "Invalid request should not return 200."
+          }
+
+          if (!body.toLowerCase().contains("detail")) {
+            error "Meaningful error message missing."
+          }
+
+          echo "Invalid inference test passed."
         }
       }
     }
@@ -67,7 +142,17 @@ pipeline {
 
   post {
     always {
-      archiveArtifacts artifacts: 'app/artifacts/**', fingerprint: true
+      sh '''
+        docker rm -f $CONTAINER_NAME || true
+      '''
+    }
+
+    success {
+      echo "PIPELINE PASSED: Inference validation successful."
+    }
+
+    failure {
+      echo "PIPELINE FAILED: Validation error detected."
     }
   }
 }

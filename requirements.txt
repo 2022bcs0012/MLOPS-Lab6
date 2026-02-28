@@ -1,5 +1,6 @@
-fastapi
-uvicorn
+fastapi 
+uvicorn 
+joblib 
+scikit-learn 
+numpy
 pandas
-scikit-learn
-joblib

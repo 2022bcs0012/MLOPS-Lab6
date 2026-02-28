@@ -1,18 +1,17 @@
 FROM python:3.9-slim
 
-# Prevent python buffering + bytecode
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
 
-# Install system deps required by sklearn/pandas
+# System dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Install python deps first (better caching)
+# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -23,5 +22,10 @@ COPY data ./data
 # Ensure artifacts directory exists
 RUN mkdir -p app/artifacts
 
-# Run training
-CMD ["python", "app/train.py"]
+# Train model during build so model.pkl exists in image
+RUN python app/train.py
+
+EXPOSE 8000
+
+# Start FastAPI server
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
